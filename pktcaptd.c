@@ -78,6 +78,9 @@ main(int argc, char *argv[])
 
 	log_init(lconf.debug ? lconf.debug : 1, LOG_DAEMON);
 
+	if (daemon(1, 0))
+		fatal("daemon");
+
 	if (config_init(&lconf) == -1)
 		fatal("config_init");
 
@@ -174,7 +177,6 @@ control_client_cb(int fd, short event, void *arg)
 	struct pktcaptd_conf	*conf;
 	struct ctrl_command	 cmd;
 	int			 n;
-
 	if (event != EV_READ)
 		goto done;
 
@@ -187,11 +189,21 @@ control_client_cb(int fd, short event, void *arg)
 		goto done;
 	}
 
+	log_debug("recv command: %d\n", cmd.cmd_id);
+
 	switch (cmd.cmd_id) {
 	case CTRL_CMD_DUMP:
 		TAILQ_FOREACH(iface, &conf->iface_tailq, entry) {
 			analyzer_dump(iface->analyzer, cli->fd);
 		}
+		break;
+	case CTRL_CMD_CLEAR:
+		TAILQ_FOREACH(iface, &conf->iface_tailq, entry) {
+			analyzer_clear(iface->analyzer);
+		}
+		break;
+	case CTRL_CMD_QUIT:
+		event_loopbreak();
 		break;
 	default:
 		log_warnx("unknown command %d\n", cmd.cmd_id);

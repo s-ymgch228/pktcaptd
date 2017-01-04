@@ -22,6 +22,8 @@
 
 enum ctrl_cmd_id {
 	CTRL_CMD_DUMP = 1,
+	CTRL_CMD_CLEAR,
+	CTRL_CMD_QUIT,
 	CTRL_CMD_NONE
 };
 
@@ -62,6 +64,7 @@ struct analyzer {
 	int		 host_max;
 	struct host	*host;
 	int		 no_buffer;
+	char		 ifname[IF_NAMESIZE];
 };
 
 struct iface {
@@ -109,6 +112,7 @@ struct analyzer * analyzer_open(struct pktcaptd_conf *, struct iface *);
 void analyze(struct analyzer *, void *, int);
 void analyzer_close(struct analyzer *);
 void analyzer_dump(struct analyzer *, int fd);
+void analyzer_clear(struct analyzer *);
 struct control * control_open(struct pktcaptd_conf *, const char *);
 struct control * control_accept(struct control *);
 int control_recv(struct control *, struct ctrl_command *);

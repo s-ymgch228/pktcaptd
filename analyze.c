@@ -61,6 +61,18 @@ dest_list_destroy(struct dest_list *dl)
 	}
 }
 
+int
+dest_list_empty(struct dest_list *dl)
+{
+	struct dest	*dest;
+	int		 total = 0;
+	TAILQ_FOREACH(dest, dl, entry) {
+		total += dest->count;
+	}
+
+	return (total == 0) ? 1 : 0;
+}
+
 struct analyzer *
 analyzer_open(struct pktcaptd_conf *conf, struct iface *iface)
 {
@@ -81,6 +93,8 @@ analyzer_open(struct pktcaptd_conf *conf, struct iface *iface)
 		a->host[i].src = -1;
 		TAILQ_INIT(&a->host[i].dest_list);
 	}
+
+	strncpy(a->ifname, iface->ifname, sizeof(a->ifname) - 1);
 
 	ret = a;
 	a = NULL;
@@ -235,12 +249,14 @@ analyzer_close(struct analyzer *a)
 }
 
 uint64_t
-print_dest_list(int fd, struct dest_list *dl, int tab)
+print_dest_list(int fd, struct dest_list *dl, int af, int tab, const char *pfx)
 {
 	struct dest	*dest = NULL;
 	char		 str[PRINTSIZ];
-	int		 i, n = 0, len;
-	uint64_t	 total = 0;
+	char		 addr[32];
+	const char	*npfx = pfx;
+	int		 i, n = 0, len, ntab = tab;
+	uint64_t	 total = 0, ntotal;
 
 	len = sizeof(str);
 
@@ -248,29 +264,37 @@ print_dest_list(int fd, struct dest_list *dl, int tab)
 		if (dest->count == 0)
 			continue;
 
-		n = 0;
-		memset(str, 0, len);
-		for (i=0; i < tab; i++)
-			n += snprintf(str + n, len - n, "    ");
+		if (af == dest->af) {
+			n = 0;
+			memset(str, 0, len);
+			memset(addr, 0, sizeof(addr));
+			n += snprintf(str + n, len - n, "%s", npfx);
+			for (i=0; i < tab; i++)
+				n += snprintf(str + n, len - n, "    ");
 
-		switch (dest->af) {
-		case AF_PACKET:
-			n += mac_ntop((u_int8_t *)dest->addr, str + n, len - n);
-			break;
-		case AF_INET:
-			n += ip_ntop((u_int32_t *)dest->addr, str + n, len - n);
-			break;
-		default:
-			n += snprintf(str + n, len - n,"unsupported proto");
-			break;
+			switch (dest->af) {
+			case AF_PACKET:
+				mac_ntop((u_int8_t *)dest->addr, addr, sizeof(addr));
+				break;
+			case AF_INET:
+				ip_ntop((u_int32_t *)dest->addr, addr, sizeof(addr));
+				ntab += 1;
+				break;
+			default:
+				snprintf(addr, sizeof(addr), "unsupported");
+				break;
+			}
+
+			n += snprintf(str + n, len - n, "\"%s\" : %lu", addr, dest->count);
+			write(fd, str, n);
+			total += dest->count;
+			npfx = ",\n";
 		}
 
-		n += snprintf(str + n, len - i, "(%lu)\n", dest->count);
-		write(fd, str, n);
-		total += dest->count;
-		dest->count = 0;
-
-		total += print_dest_list(fd, &dest->next_hdr, tab + 1);
+		ntotal = print_dest_list(fd, &dest->next_hdr, af, ntab, npfx);
+		if (ntotal != 0)
+			npfx = ",\n";
+		total += ntotal;
 	}
 
 	return total;
@@ -280,33 +304,93 @@ void
 analyzer_dump(struct analyzer *a, int fd)
 {
 	int		 i, n = 0, len;
-	char		 str[BUFSIZ];
+	char		 str[PRINTSIZ];
+	char		 addr[32];
 	uint64_t	 total = 0;
+	char		*comma = "";
 
 	len = sizeof(str);
+	n = 0;
+	memset(str, 0, len);
+
+	n += snprintf(str + n, len - n, "{\n");
+	n += snprintf(str + n, len - n,
+	    "    \"interface\" : \"%s\"\n" , a->ifname);
+	n += snprintf(str + n, len - n,
+	    "    \"flows\" : [");
+	write(fd, str, n);
+	n = 0;
+	memset(str, 0, len);
 
 	for (i = 0; i < a->host_max; i++) {
 		if (a->host[i].src == -1)
 			break;
-		n = 0;
-		memset(str, 0, len);
+		if (dest_list_empty(&a->host[i].dest_list))
+			break;
 
-		n += snprintf(str + n, len - n, "mac: ");
-		n += mac_ntop(a->host[i].macaddr, str + n, len - n);
+		n += snprintf(str + n, len - n,
+		    "%s\n"
+		    "        {\n", comma);
+
+		memset(addr, 0, sizeof(addr));
+		mac_ntop(a->host[i].macaddr, addr, sizeof(addr));
+		n += snprintf(str + n, len - n,
+		    "            \"src_mac\": \"%s\"\n",
+		    addr);
 
 		if (a->host[i].af == AF_INET) {
-			n += snprintf(str + n, len - n, "(");
-			n += ip_ntop(&a->host[i].ipaddr, str + n, len - n);
-			n += snprintf(str + n, len - n, ")");
+			memset(addr, 0, sizeof(addr));
+			ip_ntop(&a->host[i].ipaddr, addr, sizeof(addr));
+			n += snprintf(str + n, len - n,
+			    "            \"src_ip\" : \"%s\"\n",
+			    addr);
 		}
-
-		n += snprintf(str + n, len - n, "\n");
+		n += snprintf(str + n, len - n,
+		    "            \"dst\"    : [\n");
 		write(fd, str, n);
+		n = 0;
+		memset(str, 0, sizeof(str));
 
-		total += print_dest_list(fd, &a->host[i].dest_list, 1);
+		total += print_dest_list(fd, &a->host[i].dest_list, AF_INET,
+		    4, "");
+		n += snprintf(str + n, len - n,
+		    "\n            ]\n");
+		n += snprintf(str + n, len - n, "\n        }");
+		write(fd, str, n);
+		n = 0;
+		memset(str, 0, sizeof(str));
+		comma = ",";
 	}
-	n = 0;
-	memset(str, 0, len);
-	n += snprintf(str, len - n, "%lu destinations are captured\n", total);
+	n += snprintf(str + n, len - n, "\n    ]\n");
+	n += snprintf(str + n, len - n, "    \"total_dst\" : %lu\n", total);
+	n += snprintf(str + n, len - n, "}\n");
 	write(fd, str, n);
+}
+
+void
+clear_dest_list(struct dest_list *dl)
+{
+	struct dest	*dest = NULL;
+
+	TAILQ_FOREACH(dest, dl, entry) {
+		if (dest->count == 0)
+			continue;
+
+		dest->count = 0;
+		clear_dest_list(&dest->next_hdr);
+	}
+
+}
+
+void
+analyzer_clear(struct analyzer *a)
+{
+	int		 i;
+
+	for (i = 0; i < a->host_max; i++) {
+		if (a->host[i].src == -1)
+			break;
+
+		clear_dest_list(&a->host[i].dest_list);
+	}
 }
