@@ -192,7 +192,7 @@ control_client_cb(int fd, short event, void *arg)
 		goto done;
 	}
 
-	log_debug("recv command: %d\n", cmd.cmd_id);
+	log_debug("recv command: %d", cmd.cmd_id);
 
 	switch (cmd.cmd_id) {
 	case CTRL_CMD_DUMP:
@@ -209,7 +209,7 @@ control_client_cb(int fd, short event, void *arg)
 		event_loopbreak();
 		break;
 	default:
-		log_warnx("unknown command %d\n", cmd.cmd_id);
+		log_warnx("unknown command %d", cmd.cmd_id);
 	}
 
 done:
