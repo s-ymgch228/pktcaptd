@@ -78,8 +78,9 @@ main(int argc, char *argv[])
 
 	log_init(lconf.debug ? lconf.debug : 1, LOG_DAEMON);
 
-	if (daemon(1, 0))
-		fatal("daemon");
+	if (lconf.debug == 0)
+		if (daemon(1, 0))
+			fatal("daemon");
 
 	if (config_init(&lconf) == -1)
 		fatal("config_init");
@@ -123,6 +124,8 @@ main(int argc, char *argv[])
 	event_dispatch();
 
 	TAILQ_FOREACH(iface, &lconf.iface_tailq, entry) {
+		if (lconf.debug != 0)
+			analyzer_dump(iface->analyzer, fileno(stdout));
 		analyzer_close(iface->analyzer);
 	}
 

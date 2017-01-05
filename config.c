@@ -20,7 +20,7 @@ config_init(struct pktcaptd_conf *conf)
 	strncpy(ifp->ifname, "enp13s0f0", sizeof(ifp->ifname) -1);
 	TAILQ_INSERT_HEAD(&conf->iface_tailq, ifp, entry);
 
-	conf->host_max = 64;
+	conf->flowtable_size = 512;
 	conf->control_timeout = 5;
 
 	ret = 0;

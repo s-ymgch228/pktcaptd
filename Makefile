@@ -14,7 +14,8 @@ CTRL_SRCS =	pktcaptdctl.c	\
 
 
 CPPFLAGS =	-D_GNU_SOURCE	\
-		-DLOG_STDERR
+		-DLOG_STDERR	\
+		-g
 
 LIBS =	-levent
 

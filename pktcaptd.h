@@ -3,6 +3,7 @@
 
 #include <sys/queue.h>
 #include <net/if.h>
+#include <net/ethernet.h>
 #include <event.h>
 
 #ifndef PIDFILE_PATH
@@ -29,23 +30,34 @@ enum ctrl_cmd_id {
 
 struct pktcaptd_conf;
 
-TAILQ_HEAD(dest_list, dest);
+TAILQ_HEAD(flowlist, flow);
 
-struct dest {
-	sa_family_t		 af;
-	TAILQ_ENTRY(dest)	 entry;
-	unsigned char		 addr[32];
-	uint64_t		 count;
-	struct dest_list	 next_hdr;
+enum flow_flag{
+	FLOW_NONE	= 0x0000,
+	FLOW_MAC	= 0x0001,
+	FLOW_IP4	= 0x0002,
+	FLOW_IP6	= 0x0004,
 };
 
-struct host {
-	int			 af;
-	int64_t			 src;
-	u_int8_t		 macaddr[32];
-	uint32_t		 ipaddr;
-	struct in6_addr		 ip6addr;
-	struct dest_list	 dest_list;
+struct flow {
+	TAILQ_ENTRY(flow)	 entry;
+	uint32_t		 flags;
+	uint64_t		 count;
+	uint64_t		 size;
+	struct {
+		uint8_t		 macaddr[ETH_ALEN];
+		uint32_t	 ip4addr;
+		struct in6_addr	 ip6addr;
+	} src, dst;
+};
+
+struct flow_ptr {
+	uint32_t		*flags;
+	struct {
+		uint8_t		*macaddr;
+		uint32_t	*ip4addr;
+		struct in6_addr	*ip6addr;
+	} src, dst;
 };
 
 struct ctrl_command {
@@ -60,11 +72,10 @@ struct control {
 };
 
 struct analyzer {
-	int		 other;
-	int		 host_max;
-	struct host	*host;
-	int		 no_buffer;
+	struct flowlist	*flowlist_table;
+	int		 flowlist_table_size;
 	char		 ifname[IF_NAMESIZE];
+	uint32_t	 hash_mask;
 };
 
 struct iface {
@@ -77,7 +88,7 @@ struct iface {
 
 struct pktcaptd_conf {
 	int				 debug;
-	int				 host_max;
+	uint32_t			 flowtable_size;
 	int				 control_timeout;
 	TAILQ_HEAD(iface_list, iface)	 iface_tailq;
 };

@@ -23,54 +23,189 @@ ip_ntop(u_int32_t *ip, char *buf, int bufsiz)
 	    addr[0], addr[1], addr[2], addr[3]);
 }
 
-struct dest *
-dest_lookup(struct dest_list *dl, int af, void *cmp, int cmpsiz)
+uint32_t
+analyze_hash(uint32_t mask, struct flow_ptr *p)
 {
-	struct dest	*dest = NULL;
-	TAILQ_FOREACH(dest, dl, entry) {
-		if (dest->af != af)
+	uint32_t	 key = 0, ret = 0;
+
+	if (p->src.ip4addr != NULL)
+		key = ntohl(*(p->src.ip4addr));
+	ret = key & mask;
+	return ret;
+}
+
+struct flow *
+flowlist_lookup(struct flowlist *fl, struct flow_ptr *p)
+{
+	struct flow	*f = NULL;
+	char		 saddr[32], daddr[32];
+
+	TAILQ_FOREACH(f, fl, entry) {
+		if (*(p->flags) != f->flags)
 			continue;
-		if (memcmp(dest->addr, cmp, cmpsiz) == 0)
-			break;
+
+		if ((*(p->flags) & FLOW_MAC) != 0
+		    && memcmp(p->src.macaddr, f->src.macaddr, sizeof(f->src.macaddr)) != 0
+		    && memcmp(p->dst.macaddr, f->dst.macaddr, sizeof(f->dst.macaddr)) != 0)
+			continue;
+
+		if ((*(p->flags) & FLOW_IP4) != 0
+		    && memcmp(p->src.ip4addr, &f->src.ip4addr, sizeof(f->src.ip4addr)) != 0
+		    && memcmp(p->src.ip4addr, &f->dst.ip4addr, sizeof(f->dst.ip4addr)) != 0)
+			continue;
+
+		if ((*(p->flags) & FLOW_IP6) != 0
+		    && memcmp(p->src.ip6addr, &f->src.ip6addr, sizeof(f->src.ip6addr)) != 0
+		    && memcmp(p->dst.ip6addr, &f->dst.ip6addr, sizeof(f->dst.ip6addr)) != 0)
+			continue;
+
+		break;
 	}
 
-	if (dest == NULL) {
-		if ((dest = malloc(sizeof(struct dest))) == NULL)
+	if (f == NULL) {
+		if ((f = malloc(sizeof(struct flow))) == NULL)
 			goto done;
 
-		memset(dest, 0, sizeof(*dest));
-		TAILQ_INIT(&dest->next_hdr);
-		memcpy(dest->addr, cmp, cmpsiz);
-		dest->af = af;
-		TAILQ_INSERT_TAIL(dl, dest, entry);
+		memset(f, 0, sizeof(*f));
+		f->flags = *(p->flags);
+
+		if ((*(p->flags) & FLOW_MAC) != 0) {
+			memcpy(f->src.macaddr, p->src.macaddr, sizeof(f->src.macaddr));
+			memcpy(f->dst.macaddr, p->dst.macaddr, sizeof(f->dst.macaddr));
+		}
+
+		if ((*(p->flags) & FLOW_IP4) != 0) {
+			memcpy(&f->src.ip4addr, p->src.ip4addr, sizeof(f->src.ip4addr));
+			memcpy(&f->dst.ip4addr, p->dst.ip4addr, sizeof(f->dst.ip4addr));
+			memset(saddr, 0, sizeof(saddr));
+			memset(daddr, 0, sizeof(daddr));
+			ip_ntop(&f->src.ip4addr, saddr, sizeof(saddr));
+			ip_ntop(&f->dst.ip4addr, daddr, sizeof(daddr));
+			log_debug("new flow: %s -> %s", saddr, daddr);
+		}
+
+		if ((*(p->flags) & FLOW_IP6) != 0) {
+			memcpy(&f->src.ip6addr, p->src.ip6addr, sizeof(f->src.ip6addr));
+			memcpy(&f->dst.ip6addr, p->dst.ip6addr, sizeof(f->dst.ip6addr));
+		}
+
+		TAILQ_INSERT_TAIL(fl, f, entry);
 	}
+
 done:
-	return dest;
+	return f;
 }
 
 void
-dest_list_destroy(struct dest_list *dl)
+flowlist_destroy(struct flowlist *fl)
 {
-	struct dest	*dest = NULL;
+	struct flow	*f = NULL;
 
-	for (dest = TAILQ_FIRST(dl); dest != NULL; dest = TAILQ_FIRST(dl)) {
-		TAILQ_REMOVE(dl, dest, entry);
-		dest_list_destroy(&dest->next_hdr);
-
-		free(dest);
+	for (f = TAILQ_FIRST(fl); f != NULL; f = TAILQ_FIRST(fl)) {
+		TAILQ_REMOVE(fl, f, entry);
+		free(f);
 	}
 }
 
-int
-dest_list_empty(struct dest_list *dl)
+void
+flowlist_clear(struct flowlist *fl)
 {
-	struct dest	*dest;
-	int		 total = 0;
-	TAILQ_FOREACH(dest, dl, entry) {
-		total += dest->count;
+	struct flow	*f;
+	TAILQ_FOREACH(f, fl, entry) {
+		f->count = 0;
+		f->size = 0;
 	}
+}
 
-	return (total == 0) ? 1 : 0;
+uint32_t
+flowlist_dump(struct flowlist *fl, int fd, const char *pfx, int tab)
+{
+	char		 str[PRINTSIZ];
+	char		 addr[32];
+	const char	*comma = pfx;
+	struct flow	*f;
+	int		 n = 0, i;
+	int		 count = 0;
+	int		 ntab = tab + 1;
+	int		 len = sizeof(str);
+
+	TAILQ_FOREACH(f, fl, entry) {
+		if (f->count == 0)
+			continue;
+		if (f->flags == FLOW_NONE)
+			continue;
+
+		n += snprintf(str + n, len - n, "%s", comma);
+		for (i = 0; i < tab; i++)
+			n += snprintf(str + n, len - n, "    ");
+		n += snprintf(str + n, len - n, "{\n");
+
+		for (i = 0; i < ntab; i++)
+			n += snprintf(str + n, len - n, "    ");
+		n += snprintf(str + n, len - n, "\"count\":%lu,\n", f->count);
+		for (i = 0; i < ntab; i++)
+			n += snprintf(str + n, len - n, "    ");
+		n += snprintf(str + n, len - n, "\"size\" :%lu", f->size);
+
+		write(fd, str, n);
+		memset(str, 0, len);
+		n = 0;
+
+		if (f->flags & FLOW_MAC) {
+			n += snprintf(str + n, len - n, ",\n");
+
+			for (i = 0; i < ntab; i++)
+				n += snprintf(str + n, len - n, "    ");
+			memset(addr, 0, sizeof(addr));
+			mac_ntop(f->src.macaddr, addr, sizeof(addr));
+			n += snprintf(str + n, len - n, "\"src_mac\" : \"%s\",\n",
+			    addr);
+
+			for (i = 0; i < ntab; i++)
+				n += snprintf(str + n, len - n, "    ");
+			memset(addr, 0, sizeof(addr));
+			mac_ntop(f->dst.macaddr, addr, sizeof(addr));
+			n += snprintf(str + n, len - n, "\"dst_mac\" : \"%s\"",
+			    addr);
+
+			write(fd, str, n);
+			memset(str, 0, len);
+			n = 0;
+		}
+
+		if (f->flags & FLOW_IP4) {
+			n += snprintf(str + n, len - n, ",\n");
+
+			for (i = 0; i < ntab; i++)
+				n += snprintf(str + n, len - n, "    ");
+			memset(addr, 0, sizeof(addr));
+			ip_ntop(&f->src.ip4addr, addr, sizeof(addr));
+			n += snprintf(str + n, len - n, "\"src_ip4\" : \"%s\",\n",
+			    addr);
+
+			for (i = 0; i < ntab; i++)
+				n += snprintf(str + n, len - n, "    ");
+			memset(addr, 0, sizeof(addr));
+			ip_ntop(&f->dst.ip4addr, addr, sizeof(addr));
+			n += snprintf(str + n, len - n, "\"dst_ip4\" : \"%s\"",
+			    addr);
+
+			write(fd, str, n);
+			memset(str, 0, len);
+			n = 0;
+		}
+
+		n += snprintf(str + n, len - n, "\n");
+		for (i = 0; i < tab; i++)
+			n += snprintf(str + n, len - n, "    ");
+		n += snprintf(str + n, len - n, "}");
+		write(fd, str, n);
+		memset(str, 0, len);
+		n = 0;
+		comma = ",\n";
+		count++;
+	}
+	return count;
 }
 
 struct analyzer *
@@ -78,20 +213,23 @@ analyzer_open(struct pktcaptd_conf *conf, struct iface *iface)
 {
 	struct analyzer	*a = NULL, *ret = NULL;
 	int		 i;
+	uint32_t	 mask, nmask;
 
 	if ((a = malloc(sizeof(struct analyzer))) == NULL)
 		goto done;
 
 	memset(a, 0, sizeof(*a));
 
-	if ((a->host = malloc(sizeof(struct host) * conf->host_max)) == NULL)
+	if ((a->flowlist_table = malloc(sizeof(struct flowlist) * conf->flowtable_size)) == NULL)
 		goto done;
 
-	a->host_max = conf->host_max;
-	memset(a->host, 0, sizeof(struct host) * a->host_max);
-	for (i = 0; i < a->host_max; i++) {
-		a->host[i].src = -1;
-		TAILQ_INIT(&a->host[i].dest_list);
+	a->flowlist_table_size = conf->flowtable_size;
+	for (mask = 0; nmask < a->flowlist_table_size; nmask = ((mask << 1) | 0x01)) {
+		mask = nmask;
+	}
+	a->hash_mask = mask;
+	for (i = 0; i < a->flowlist_table_size; i++) {
+		TAILQ_INIT(&a->flowlist_table[i]);
 	}
 
 	strncpy(a->ifname, iface->ifname, sizeof(a->ifname) - 1);
@@ -100,8 +238,8 @@ analyzer_open(struct pktcaptd_conf *conf, struct iface *iface)
 	a = NULL;
 done:
 	if (a) {
-		if (a->host)
-			free(a->host);
+		if (a->flowlist_table)
+			free(a->flowlist_table);
 		free(a);
 	}
 	return ret;
@@ -113,120 +251,57 @@ analyze(struct analyzer *a, void *bufp, int siz)
 	struct ether_header	*eh;
 	struct iphdr		*iph;
 	struct ip6_hdr		*ip6h;
-	struct host		*host = NULL;
-	struct dest		*dest = NULL;
-	struct dest_list	*dest_list;
-	int			 offset = 0;
-	int			 af = AF_PACKET;
-	int64_t			 src = 0;
 	int			 hdrsiz = 0;
-	int			 quit, i;
+	int			 n = 0;
 	uint8_t			*buf = (uint8_t *)bufp;
+	struct flow		*flow;
+	struct flowlist		*flowlist;
+	struct flow_ptr		 inpkt, entry;
+	uint32_t		 inp_flags;
 
-	if (siz < sizeof(struct ether_header))
+	memset(&inpkt, 0, sizeof(inpkt));
+	memset(&entry, 0, sizeof(entry));
+	inpkt.flags = &inp_flags;
+
+	hdrsiz = sizeof(struct ether_header);
+	if (siz < hdrsiz)
 		return;
-
 	eh = (struct ether_header *)buf;
-	memcpy(&src, eh->ether_shost, sizeof(eh->ether_shost));
+	n += sizeof(*eh);
+	inpkt.src.macaddr = eh->ether_shost;
+	inpkt.dst.macaddr = eh->ether_dhost;
+	*(inpkt.flags) = FLOW_MAC;
 
-	for (i = 0; i < a->host_max; i++) {
-		if (a->host[i].src == -1) {
-			a->host[i].src = src;
-			memcpy(a->host[i].macaddr, eh->ether_shost,
-			    sizeof(eh->ether_shost));
-		}
-
-		if (a->host[i].src == src) {
-			host = &a->host[i];
-			break;
-		}
+	switch (ntohs(eh->ether_type)) {
+	case ETHERTYPE_IP:
+		hdrsiz = sizeof(struct iphdr);
+		if (siz < (n + hdrsiz))
+			goto done;
+		iph = (struct iphdr *) (buf + n);
+		n += hdrsiz;
+		inpkt.src.ip4addr = &iph->saddr;
+		inpkt.dst.ip4addr = &iph->daddr;
+		*(inpkt.flags) |= FLOW_IP4;
+		break;
+	case ETHERTYPE_IPV6:
+		hdrsiz = sizeof(struct ip6_hdr);
+		if (siz < (n + hdrsiz))
+			goto done;
+		ip6h = (struct ip6_hdr *)(buf + n);
+		n += hdrsiz;
+		inpkt.src.ip6addr = &ip6h->ip6_src;
+		inpkt.dst.ip6addr = &ip6h->ip6_dst;
+		*(inpkt.flags) |= FLOW_IP6;
+		break;
+	default:
+		goto done;
 	}
 
-	if (host == NULL) {
-		if (a->no_buffer == 0) {
-			log_warnx("no host buffer (bufsiz=%d)",
-			    a->host_max);
-			a->no_buffer = 1;
-		}
-		return;
-	}
-
-	dest_list = &host->dest_list;
-	quit = 0;
-
-	while (quit == 0) {
-		switch (af) {
-		case AF_PACKET:
-			hdrsiz = sizeof(*eh);
-			if (siz < hdrsiz + offset)
-				break;
-
-			eh = (struct ether_header *)(buf + offset);
-			dest = dest_lookup(dest_list, af, eh->ether_dhost,
-			    sizeof(eh->ether_dhost));
-			if (dest) {
-				dest->count++;
-				dest_list = &dest->next_hdr;
-			} else
-				quit = 1;
-
-			switch (ntohs(eh->ether_type)) {
-			case ETHERTYPE_IP:
-				af = AF_INET;
-				break;
-			case ETHERTYPE_IPV6:
-				af = AF_INET6;
-			default:
-				af = AF_UNSPEC;
-			}
-			break;
-		case AF_INET:
-			hdrsiz = sizeof(*iph);
-			if (siz < hdrsiz + offset)
-				break;
-
-			iph = (struct iphdr *)(buf + offset);
-			dest = dest_lookup(dest_list, af, &iph->daddr,
-			    sizeof(iph->daddr));
-
-			if (dest) {
-				dest->count++;
-				dest_list = NULL;
-			}
-
-			if (host->af == AF_UNSPEC) {
-				host->af = af;
-				host->ipaddr = iph->saddr;
-			}
-			af = AF_UNSPEC;
-			break;
-		case AF_INET6:
-			hdrsiz = sizeof(*ip6h);
-			if (siz < hdrsiz + offset)
-				break;
-
-			ip6h = (struct ip6_hdr *)buf + offset;
-			dest = dest_lookup(dest_list, af, ip6h->ip6_dst.s6_addr,
-			    sizeof(ip6h->ip6_dst.s6_addr));
-
-			if (dest) {
-				dest->count++;
-				dest_list = NULL;
-			}
-
-			if (host->af == AF_UNSPEC) {
-				host->af = af;
-				host->ip6addr = ip6h->ip6_src;
-			}
-
-			af = AF_UNSPEC;
-			break;
-		default:
-			quit = 1;
-		}
-
-		offset += hdrsiz;
-	}
+done:
+	flowlist = &a->flowlist_table[analyze_hash(a->hash_mask, &inpkt)];
+	flow = flowlist_lookup(flowlist, &inpkt);
+	flow->count ++;
+	flow->size += siz;
 }
 
 void
@@ -237,67 +312,12 @@ analyzer_close(struct analyzer *a)
 	if (a == NULL)
 		return;
 
-	for (i = 0; i < a->host_max; i++) {
-		if (a->host[i].src == -1)
-			break;
-
-		dest_list_destroy(&a->host[i].dest_list);
+	for (i = 0; i < a->flowlist_table_size; i++) {
+		flowlist_destroy(&a->flowlist_table[i]);
 	}
 
-	free(a->host);
+	free(a->flowlist_table);
 	free(a);
-}
-
-uint64_t
-print_dest_list(int fd, struct dest_list *dl, int af, int tab, const char *pfx)
-{
-	struct dest	*dest = NULL;
-	char		 str[PRINTSIZ];
-	char		 addr[32];
-	const char	*npfx = pfx;
-	int		 i, n = 0, len, ntab = tab;
-	uint64_t	 total = 0, ntotal;
-
-	len = sizeof(str);
-
-	TAILQ_FOREACH(dest, dl, entry) {
-		if (dest->count == 0)
-			continue;
-
-		if (af == dest->af) {
-			n = 0;
-			memset(str, 0, len);
-			memset(addr, 0, sizeof(addr));
-			n += snprintf(str + n, len - n, "%s", npfx);
-			for (i=0; i < tab; i++)
-				n += snprintf(str + n, len - n, "    ");
-
-			switch (dest->af) {
-			case AF_PACKET:
-				mac_ntop((u_int8_t *)dest->addr, addr, sizeof(addr));
-				break;
-			case AF_INET:
-				ip_ntop((u_int32_t *)dest->addr, addr, sizeof(addr));
-				ntab += 1;
-				break;
-			default:
-				snprintf(addr, sizeof(addr), "unsupported");
-				break;
-			}
-
-			n += snprintf(str + n, len - n, "\"%s\" : %lu", addr, dest->count);
-			write(fd, str, n);
-			total += dest->count;
-			npfx = ",\n";
-		}
-
-		ntotal = print_dest_list(fd, &dest->next_hdr, af, ntab, npfx);
-		if (ntotal != 0)
-			npfx = ",\n";
-		total += ntotal;
-	}
-
-	return total;
 }
 
 void
@@ -305,9 +325,9 @@ analyzer_dump(struct analyzer *a, int fd)
 {
 	int		 i, n = 0, len;
 	char		 str[PRINTSIZ];
-	char		 addr[32];
 	uint64_t	 total = 0;
-	char		*comma = "";
+	uint64_t	 count = 0;
+	char		*comma = "\n";
 
 	len = sizeof(str);
 	n = 0;
@@ -315,71 +335,24 @@ analyzer_dump(struct analyzer *a, int fd)
 
 	n += snprintf(str + n, len - n, "{\n");
 	n += snprintf(str + n, len - n,
-	    "    \"interface\" : \"%s\"\n" , a->ifname);
+	    "    \"interface\" : \"%s\",\n" , a->ifname);
 	n += snprintf(str + n, len - n,
 	    "    \"flows\" : [");
 	write(fd, str, n);
 	n = 0;
 	memset(str, 0, len);
 
-	for (i = 0; i < a->host_max; i++) {
-		if (a->host[i].src == -1)
-			break;
-		if (dest_list_empty(&a->host[i].dest_list))
-			break;
-
-		n += snprintf(str + n, len - n,
-		    "%s\n"
-		    "        {\n", comma);
-
-		memset(addr, 0, sizeof(addr));
-		mac_ntop(a->host[i].macaddr, addr, sizeof(addr));
-		n += snprintf(str + n, len - n,
-		    "            \"src_mac\": \"%s\"\n",
-		    addr);
-
-		if (a->host[i].af == AF_INET) {
-			memset(addr, 0, sizeof(addr));
-			ip_ntop(&a->host[i].ipaddr, addr, sizeof(addr));
-			n += snprintf(str + n, len - n,
-			    "            \"src_ip\" : \"%s\"\n",
-			    addr);
-		}
-		n += snprintf(str + n, len - n,
-		    "            \"dst\"    : [\n");
-		write(fd, str, n);
-		n = 0;
-		memset(str, 0, sizeof(str));
-
-		total += print_dest_list(fd, &a->host[i].dest_list, AF_INET,
-		    4, "");
-		n += snprintf(str + n, len - n,
-		    "\n            ]\n");
-		n += snprintf(str + n, len - n, "\n        }");
-		write(fd, str, n);
-		n = 0;
-		memset(str, 0, sizeof(str));
-		comma = ",";
+	for (i = 0; i < a->flowlist_table_size; i++) {
+		count = flowlist_dump(&a->flowlist_table[i], fd, comma, 2);
+		if (count != 0)
+			comma = ",\n";
+		total += count;
 	}
-	n += snprintf(str + n, len - n, "\n    ]\n");
-	n += snprintf(str + n, len - n, "    \"total_dst\" : %lu\n", total);
+
+	n += snprintf(str + n, len - n, "\n    ],\n");
+	n += snprintf(str + n, len - n, "    \"total_flow\" : %lu\n", total);
 	n += snprintf(str + n, len - n, "}\n");
 	write(fd, str, n);
-}
-
-void
-clear_dest_list(struct dest_list *dl)
-{
-	struct dest	*dest = NULL;
-
-	TAILQ_FOREACH(dest, dl, entry) {
-		if (dest->count == 0)
-			continue;
-
-		dest->count = 0;
-		clear_dest_list(&dest->next_hdr);
-	}
-
 }
 
 void
@@ -387,10 +360,7 @@ analyzer_clear(struct analyzer *a)
 {
 	int		 i;
 
-	for (i = 0; i < a->host_max; i++) {
-		if (a->host[i].src == -1)
-			break;
-
-		clear_dest_list(&a->host[i].dest_list);
+	for (i = 0; i < a->flowlist_table_size; i++) {
+		flowlist_clear(&a->flowlist_table[i]);
 	}
 }
