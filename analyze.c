@@ -27,9 +27,13 @@ uint32_t
 analyze_hash(uint32_t mask, struct flow_ptr *p)
 {
 	uint32_t	 key = 0, ret = 0;
+	uint32_t	 src, dst;
 
-	if (p->src.ip4addr != NULL)
-		key = ntohl(*(p->src.ip4addr));
+	if (p->src.ip4addr != NULL && p->dst.ip4addr != NULL) {
+		src = ntohl(*p->src.ip4addr);
+		dst = ntohl(*p->dst.ip4addr);
+		key = src ^ dst;
+	}
 	ret = key & mask;
 	return ret;
 }
