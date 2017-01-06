@@ -21,12 +21,6 @@
 #define PRINTSIZ	2048
 
 
-enum ctrl_cmd_id {
-	CTRL_CMD_DUMP = 1,
-	CTRL_CMD_CLEAR,
-	CTRL_CMD_QUIT,
-	CTRL_CMD_NONE
-};
 
 struct pktcaptd_conf;
 
@@ -58,6 +52,13 @@ struct flow_ptr {
 		uint32_t	*ip4addr;
 		struct in6_addr	*ip6addr;
 	} src, dst;
+};
+
+enum ctrl_cmd_id {
+	CTRL_CMD_DUMP = 1,
+	CTRL_CMD_CLEAR,
+	CTRL_CMD_QUIT,
+	CTRL_CMD_NONE
 };
 
 struct ctrl_command {
