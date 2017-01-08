@@ -18,8 +18,19 @@
 #define CONTROL_CLIENT_NUM	5
 #endif
 
-#define PRINTSIZ	2048
+#ifndef CFGFILE_PATH
+#define CFGFILE_PATH	"/etc/pktcaptd.conf"
+#endif
 
+#ifndef CTRL_TIMEOUTMAX
+#define CTRL_TIMEOUTMAX	5
+#endif
+
+#define FLOWTABLE_STR		"512"
+#define CTRL_TIMEOUT_STR	"5"
+
+#define PRINTSIZ	2048
+#define CONFIGSIZ	2048
 
 
 struct pktcaptd_conf;
@@ -31,6 +42,8 @@ enum flow_flag{
 	FLOW_MAC	= 0x0001,
 	FLOW_IP4	= 0x0002,
 	FLOW_IP6	= 0x0004,
+	FLOW_TCP	= 0x0008,
+	FLOW_UDP	= 0x0010
 };
 
 struct flow {
@@ -42,6 +55,7 @@ struct flow {
 		uint8_t		 macaddr[ETH_ALEN];
 		uint32_t	 ip4addr;
 		struct in6_addr	 ip6addr;
+		uint16_t	 port;
 	} src, dst;
 };
 
@@ -51,11 +65,12 @@ struct flow_ptr {
 		uint8_t		*macaddr;
 		uint32_t	*ip4addr;
 		struct in6_addr	*ip6addr;
+		uint16_t	*port;
 	} src, dst;
 };
 
 enum ctrl_cmd_id {
-	CTRL_CMD_DUMP = 1,
+	CTRL_CMD_DUMP	= 1,
 	CTRL_CMD_CLEAR,
 	CTRL_CMD_QUIT,
 	CTRL_CMD_NONE
@@ -72,11 +87,19 @@ struct control {
 	struct pktcaptd_conf	*conf;
 };
 
+enum analyze_flag {
+	ANALYZE_L2	= 0x000001,
+	ANALYZE_L3	= 0x000002,
+	ANALYZE_L4	= 0x000004,
+	ANALYZE_NONE	= 0x000000
+};
+
 struct analyzer {
 	struct flowlist	*flowlist_table;
 	int		 flowlist_table_size;
 	char		 ifname[IF_NAMESIZE];
 	uint32_t	 hash_mask;
+	uint32_t	 analyze_flag;
 };
 
 struct iface {
@@ -85,6 +108,10 @@ struct iface {
 	int			 fd;
 	struct event		 event;
 	struct analyzer		*analyzer;
+	unsigned int		 ifindex;
+	uint32_t		 analyze_flag;
+	char			*recvbuf;
+	uint32_t		 recvbufsiz;
 };
 
 struct pktcaptd_conf {
@@ -116,7 +143,7 @@ void fatal(const char *, ...)
 void fatalx(const char *, ...)
 	    __attribute__((__format__ (printf, 1, 2)));
 
-int config_init(struct pktcaptd_conf *);
+int config_init(struct pktcaptd_conf *, const char *);
 int interface_open(struct pktcaptd_conf *);
 void interface_close(struct pktcaptd_conf *);
 int interface_recv(struct iface *, void *, int);
@@ -129,4 +156,9 @@ struct control * control_open(struct pktcaptd_conf *, const char *);
 struct control * control_accept(struct control *);
 int control_recv(struct control *, struct ctrl_command *);
 void control_client_remove(struct control *);
+
+#ifndef _HAVE_STRTONUM_
+long long strtonum(const char *, long long, long long, const char **);
+#endif
+
 #endif

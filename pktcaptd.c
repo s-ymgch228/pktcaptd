@@ -35,6 +35,9 @@ void
 usage(void)
 {
 	fprintf(stderr, "pktcaptd [-d] [-P pidfile] [-S socket]\n");
+	fprintf(stderr, "         [-C config file]\n");
+	fprintf(stderr, "         [-F flow table size]\n");
+	fprintf(stderr, "         [-T control socket timeout]\n");
 	exit(1);
 }
 
@@ -45,6 +48,10 @@ main(int argc, char *argv[])
 	struct pktcaptd_conf	 lconf;
 	const char		*pidfile = PIDFILE_PATH;
 	const char		*ctrlsock = SOCKET_PATH;
+	const char		*cfgfile = CFGFILE_PATH;
+	const char		*flowsize = FLOWTABLE_STR;
+	const char		*ctrl_timeout = CTRL_TIMEOUT_STR;
+	const char		*errstr = NULL;
 	int			 ch;
 	struct pidfh		*pfh;
 	pid_t			 pid;
@@ -54,7 +61,7 @@ main(int argc, char *argv[])
 
 	memset(&lconf, 0, sizeof(lconf));
 
-	while ((ch = getopt(argc, argv, "dP:S:")) != -1) {
+	while ((ch = getopt(argc, argv, "dP:S:C:F:T:")) != -1) {
 		switch (ch) {
 		case 'd':
 			lconf.debug = 2;
@@ -64,6 +71,15 @@ main(int argc, char *argv[])
 			break;
 		case 'S':
 			ctrlsock = optarg;
+			break;
+		case 'C':
+			cfgfile = optarg;
+			break;
+		case 'F':
+			flowsize = optarg;
+			break;
+		case 'T':
+			ctrl_timeout = optarg;
 			break;
 		default:
 			usage();
@@ -82,8 +98,17 @@ main(int argc, char *argv[])
 		if (daemon(1, 0))
 			fatal("daemon");
 
-	if (config_init(&lconf) == -1)
+	if (config_init(&lconf, cfgfile) == -1)
 		fatal("config_init");
+
+	errstr = NULL;
+	lconf.flowtable_size = strtonum(flowsize, 1, UINT32_MAX, &errstr);
+	if (errstr != NULL)
+		fatalx("flowsize %s: %s", errstr, flowsize);
+
+	lconf.control_timeout = strtonum(ctrl_timeout, 1, CTRL_TIMEOUTMAX, &errstr);
+	if (errstr != NULL)
+		fatalx("control timeout %s: %s", errstr, ctrl_timeout);
 
 	pid = getpid();
 	if ((pfh = pidfile_open(pidfile, 0644, &pid)) == NULL)
@@ -91,6 +116,11 @@ main(int argc, char *argv[])
 
 	if (pidfile_write(pfh) == -1)
 		fatal("pidfile_write");
+
+	if (lconf.debug != 0) {
+		log_debug("flowsize: %d", lconf.flowtable_size);
+		log_debug("control timeout : %d", lconf.control_timeout);
+	}
 
 	event_init();
 	signal_set(&ev_sigint, SIGINT, sighdlr, &lconf);
@@ -139,12 +169,12 @@ main(int argc, char *argv[])
 void
 recvpkt(int fd, short event, void *arg)
 {
-	char		 buf[BUFSIZ];
-	int		 n;
 	struct iface	*iface= (struct iface *)arg;
+	char		*buf = iface->recvbuf;
+	int		 n, bufsiz = iface->recvbufsiz;
 
 	recvcnt ++;
-	n = interface_recv(iface, buf, sizeof(buf));
+	n = interface_recv(iface, buf, bufsiz);
 	if (iface->analyzer)
 		analyze(iface->analyzer, buf, n);
 }
