@@ -154,12 +154,15 @@ main(int argc, char *argv[])
 	event_dispatch();
 
 	TAILQ_FOREACH(iface, &lconf.iface_tailq, entry) {
+		event_del(&iface->event);
 		if (lconf.debug != 0)
 			analyzer_dump(iface->analyzer, fileno(stdout));
 		analyzer_close(iface->analyzer);
 	}
 
 	interface_close(&lconf);
+	event_del(&ctrl->event);
+	control_close(ctrl);
 	pidfile_remove(pfh);
 
 	log_info("exit pktcaptd");

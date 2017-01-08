@@ -12,18 +12,20 @@ control_open(struct pktcaptd_conf *conf, const char *sockpath)
 {
 	struct control		*ctrl = NULL, *ret = NULL;
 	struct sockaddr_un	 sun;
+	int			 pathlen = 0;
 
 	if ((ctrl = malloc(sizeof(struct control))) == NULL)
 		goto done;
 
 	memset(ctrl, 0, sizeof(*ctrl));
 
+
 	if ((ctrl->fd = socket(AF_UNIX, SOCK_STREAM, 0)) == -1)
 		goto done;
 
 	memset(&sun, 0, sizeof(sun));
 	sun.sun_family = AF_UNIX;
-	strncpy(sun.sun_path, sockpath, sizeof(sun.sun_path));
+	strncpy(sun.sun_path, sockpath, sizeof(sun.sun_path) - 1);
 	unlink(sun.sun_path);
 
 	if (bind(ctrl->fd, (struct sockaddr *)&sun, sizeof(sun)) == -1)
@@ -32,12 +34,20 @@ control_open(struct pktcaptd_conf *conf, const char *sockpath)
 	if (listen(ctrl->fd, CONTROL_CLIENT_NUM) == -1)
 		goto done;
 
+	pathlen = strlen(sun.sun_path) + 1;
+	if ((ctrl->sockpath = malloc(pathlen)) == NULL)
+		goto done;
+	memset(ctrl->sockpath, 0, pathlen);
+	strncpy(ctrl->sockpath, sun.sun_path, pathlen - 1);
+
 	ctrl->conf = conf;
 	ctrl->timeout = conf->control_timeout;
 	ret = ctrl;
 	ctrl = NULL;
 done:
 	if (ctrl) {
+		if (ctrl->sockpath)
+			free(ctrl->sockpath);
 		if (ctrl->fd != -1)
 			close(ctrl->fd);
 		free(ctrl);
@@ -93,4 +103,12 @@ control_client_remove(struct control *cli)
 		close(cli->fd);
 
 	free(cli);
+}
+
+void
+control_close(struct control *ctrl)
+{
+	if (ctrl->sockpath)
+		unlink(ctrl->sockpath);
+	control_client_remove(ctrl);
 }

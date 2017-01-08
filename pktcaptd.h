@@ -81,10 +81,11 @@ struct ctrl_command {
 };
 
 struct control {
-	int			 fd;
-	struct event		 event;
-	int			 timeout;
 	struct pktcaptd_conf	*conf;
+	struct event		 event;
+	int			 fd;
+	int			 timeout;
+	char			*sockpath;
 };
 
 enum analyze_flag {
@@ -156,6 +157,7 @@ struct control * control_open(struct pktcaptd_conf *, const char *);
 struct control * control_accept(struct control *);
 int control_recv(struct control *, struct ctrl_command *);
 void control_client_remove(struct control *);
+void control_close(struct control *);
 
 #ifndef _HAVE_STRTONUM_
 long long strtonum(const char *, long long, long long, const char **);
