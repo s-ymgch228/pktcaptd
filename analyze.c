@@ -1,6 +1,10 @@
 #include <net/ethernet.h>
+#include <netinet/in.h>
 #include <netinet/ip.h>
 #include <netinet/ip6.h>
+#include <netinet/tcp.h>
+#include <netinet/udp.h>
+#include <arpa/inet.h>
 #include <stdlib.h>
 #include <string.h>
 #include <unistd.h>
@@ -63,6 +67,11 @@ flowlist_lookup(struct flowlist *fl, struct flow_ptr *p)
 		    && memcmp(p->dst.ip6addr, &f->dst.ip6addr, sizeof(f->dst.ip6addr)) != 0)
 			continue;
 
+		if ((*(p->flags) & (FLOW_TCP | FLOW_UDP)) != 0
+		    && memcmp(p->src.port, &f->src.port, sizeof(f->src.port)) != 0
+		    && memcmp(p->dst.port, &f->dst.port, sizeof(f->dst.port)) != 0)
+			continue;
+
 		break;
 	}
 
@@ -91,6 +100,11 @@ flowlist_lookup(struct flowlist *fl, struct flow_ptr *p)
 		if ((*(p->flags) & FLOW_IP6) != 0) {
 			memcpy(&f->src.ip6addr, p->src.ip6addr, sizeof(f->src.ip6addr));
 			memcpy(&f->dst.ip6addr, p->dst.ip6addr, sizeof(f->dst.ip6addr));
+		}
+
+		if ((*(p->flags) & (FLOW_TCP | FLOW_UDP)) != 0) {
+			memcpy(&f->src.port, p->src.port, sizeof(f->src.port));
+			memcpy(&f->dst.port, p->dst.port, sizeof(f->dst.port));
 		}
 
 		TAILQ_INSERT_TAIL(fl, f, entry);
@@ -127,6 +141,7 @@ flowlist_dump(struct flowlist *fl, int fd, const char *pfx, int tab)
 	char		 str[PRINTSIZ];
 	char		 addr[32];
 	const char	*comma = pfx;
+	const char	*proto_str = "unknown";
 	struct flow	*f;
 	int		 n = 0, i;
 	int		 count = 0;
@@ -197,6 +212,54 @@ flowlist_dump(struct flowlist *fl, int fd, const char *pfx, int tab)
 			write(fd, str, n);
 			memset(str, 0, len);
 			n = 0;
+		} else if (f->flags & FLOW_IP6) {
+			n += snprintf(str + n, len - n, ",\n");
+
+			for (i = 0; i < ntab; i++)
+				n += snprintf(str + n, len - n, "    ");
+			memset(addr, 0, sizeof(addr));
+			inet_ntop(AF_INET6, &f->src.ip6addr, addr, sizeof(addr));
+			n += snprintf(str + n, len - n, "\"src_ip6\" : \"%s\",\n",
+			    addr);
+
+			for (i = 0; i < ntab; i++)
+				n += snprintf(str + n, len - n, "    ");
+			memset(addr, 0, sizeof(addr));
+			inet_ntop(AF_INET6, &f->dst.ip6addr, addr, sizeof(addr));
+			n += snprintf(str + n, len - n, "\"dst_ip6\" : \"%s\"",
+			    addr);
+
+			write(fd, str, n);
+			memset(str, 0, len);
+			n = 0;
+		}
+
+
+		if (f->flags & (FLOW_TCP | FLOW_UDP)) {
+			n += snprintf(str + n, len - n, ",\n");
+
+			if (f->flags & FLOW_TCP)
+				proto_str = "tcp";
+			else
+				proto_str = "udp";
+
+			for (i = 0; i < ntab; i++)
+				n += snprintf(str + n, len - n, "    ");
+			n += snprintf(str + n, len - n,
+			    "\"l4proto\" : \"%s\",\n", proto_str);
+
+			for (i = 0; i < ntab; i++)
+				n += snprintf(str + n, len - n, "    ");
+			n += snprintf(str + n, len - n, "\"src_port\" : %u,\n",
+			    ntohs(f->src.port));
+
+			for (i = 0; i < ntab; i++)
+				n += snprintf(str + n, len - n, "    ");
+			n += snprintf(str + n, len - n, "\"dst_port\" : %u",
+			    ntohs(f->dst.port));
+			write(fd, str, n);
+			memset(str, 0, len);
+			n = 0;
 		}
 
 		n += snprintf(str + n, len - n, "\n");
@@ -237,6 +300,7 @@ analyzer_open(struct pktcaptd_conf *conf, struct iface *iface)
 	}
 
 	strncpy(a->ifname, iface->ifname, sizeof(a->ifname) - 1);
+	a->analyze_flag = iface->analyze_flag;
 
 	ret = a;
 	a = NULL;
@@ -255,6 +319,8 @@ analyze(struct analyzer *a, void *bufp, int siz)
 	struct ether_header	*eh;
 	struct iphdr		*iph;
 	struct ip6_hdr		*ip6h;
+	struct tcphdr		*tcph;
+	struct udphdr		*udph;
 	int			 hdrsiz = 0;
 	int			 n = 0;
 	uint8_t			*buf = (uint8_t *)bufp;
@@ -262,6 +328,7 @@ analyze(struct analyzer *a, void *bufp, int siz)
 	struct flowlist		*flowlist;
 	struct flow_ptr		 inpkt, entry;
 	uint32_t		 inp_flags;
+	uint16_t		 next_proto = 0;
 
 	memset(&inpkt, 0, sizeof(inpkt));
 	memset(&entry, 0, sizeof(entry));
@@ -272,20 +339,26 @@ analyze(struct analyzer *a, void *bufp, int siz)
 		return;
 	eh = (struct ether_header *)buf;
 	n += sizeof(*eh);
-	inpkt.src.macaddr = eh->ether_shost;
-	inpkt.dst.macaddr = eh->ether_dhost;
-	*(inpkt.flags) = FLOW_MAC;
+	if (a->analyze_flag & ANALYZE_L2) {
+		inpkt.src.macaddr = eh->ether_shost;
+		inpkt.dst.macaddr = eh->ether_dhost;
+		*(inpkt.flags) = FLOW_MAC;
+	}
+	next_proto = (uint16_t)ntohs(eh->ether_type);
 
-	switch (ntohs(eh->ether_type)) {
+	switch (next_proto) {
 	case ETHERTYPE_IP:
 		hdrsiz = sizeof(struct iphdr);
 		if (siz < (n + hdrsiz))
 			goto done;
 		iph = (struct iphdr *) (buf + n);
 		n += hdrsiz;
-		inpkt.src.ip4addr = &iph->saddr;
-		inpkt.dst.ip4addr = &iph->daddr;
-		*(inpkt.flags) |= FLOW_IP4;
+		if (a->analyze_flag & ANALYZE_L3) {
+			inpkt.src.ip4addr = &iph->saddr;
+			inpkt.dst.ip4addr = &iph->daddr;
+			*(inpkt.flags) |= FLOW_IP4;
+		}
+		next_proto = iph->protocol;
 		break;
 	case ETHERTYPE_IPV6:
 		hdrsiz = sizeof(struct ip6_hdr);
@@ -293,9 +366,41 @@ analyze(struct analyzer *a, void *bufp, int siz)
 			goto done;
 		ip6h = (struct ip6_hdr *)(buf + n);
 		n += hdrsiz;
-		inpkt.src.ip6addr = &ip6h->ip6_src;
-		inpkt.dst.ip6addr = &ip6h->ip6_dst;
-		*(inpkt.flags) |= FLOW_IP6;
+		if (a->analyze_flag & ANALYZE_L3) {
+			inpkt.src.ip6addr = &ip6h->ip6_src;
+			inpkt.dst.ip6addr = &ip6h->ip6_dst;
+			*(inpkt.flags) |= FLOW_IP6;
+		}
+		next_proto = ip6h->ip6_ctlun.ip6_un1.ip6_un1_nxt;
+		break;
+	default:
+		goto done;
+	}
+
+	switch (next_proto) {
+	case IPPROTO_TCP:
+		hdrsiz = sizeof(struct tcphdr);
+		if (siz < (n + hdrsiz))
+			goto done;
+		tcph = (struct tcphdr *)(buf + n);
+		n += hdrsiz;
+		if (a->analyze_flag & ANALYZE_L4) {
+			inpkt.src.port = &tcph->th_sport;
+			inpkt.dst.port = &tcph->th_dport;
+			*(inpkt.flags) |= FLOW_TCP;
+		}
+		break;
+	case IPPROTO_UDP:
+		hdrsiz = sizeof(struct udphdr);
+		if (siz < (n + hdrsiz))
+			goto done;
+		udph = (struct udphdr *)(buf + n);
+		n += hdrsiz;
+		if (a->analyze_flag & ANALYZE_L4) {
+			inpkt.src.port = &udph->uh_sport;
+			inpkt.dst.port = &udph->uh_dport;
+			*(inpkt.flags) |= FLOW_UDP;
+		}
 		break;
 	default:
 		goto done;
@@ -348,6 +453,9 @@ analyzer_dump(struct analyzer *a, int fd)
 
 	for (i = 0; i < a->flowlist_table_size; i++) {
 		count = flowlist_dump(&a->flowlist_table[i], fd, comma, 2);
+		if (count != 0)
+			log_stderr("flowlist#%4d is %lu flows", i, count);
+
 		if (count != 0)
 			comma = ",\n";
 		total += count;

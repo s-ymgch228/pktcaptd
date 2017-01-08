@@ -6,6 +6,7 @@
 #include <string.h>
 #include <errno.h>
 #include <unistd.h>
+#include <stdlib.h>
 
 #include "pktcaptd.h"
 
@@ -21,7 +22,7 @@ interface_open(struct pktcaptd_conf *conf)
 		memset(&sll, 0, sizeof(sll));
 		sll.sll_family = AF_PACKET;
 		sll.sll_protocol = htons(ETH_P_ALL);
-		sll.sll_ifindex = if_nametoindex(iface->ifname);
+		sll.sll_ifindex = iface->ifindex;
 
 		if (sll.sll_ifindex == 0) {
 			log_warn("if_nametoindex");
@@ -40,7 +41,6 @@ interface_open(struct pktcaptd_conf *conf)
 		}
 
 		memset(&ifreq, 0, sizeof(ifreq));
-		ifreq.ifr_ifindex = sll.sll_ifindex;
 		strncpy(ifreq.ifr_name, iface->ifname, sizeof(ifreq.ifr_name) - 1);
 
 		if (ioctl(s, SIOCGIFFLAGS, &ifreq) == -1) {
@@ -53,6 +53,25 @@ interface_open(struct pktcaptd_conf *conf)
 		if (ioctl(s, SIOCSIFFLAGS, &ifreq) == -1) {
 			log_warn("ioctl(SIOSIFFLAGS)");
 			close(s);
+			continue;
+		}
+
+		memset(&ifreq, 0, sizeof(ifreq));
+		strncpy(ifreq.ifr_name, iface->ifname, sizeof(ifreq.ifr_name) - 1);
+		if (ioctl(s, SIOCGIFMTU, &ifreq) == -1) {
+			log_warn("ioctl(SIOCGIFMTU)");
+			iface->recvbufsiz = 1500; /* ETHERMTU size */
+		} else {
+			iface->recvbufsiz = ifreq.ifr_mtu;
+		}
+
+		iface->recvbufsiz *= 2;
+
+		if ((iface->recvbuf =
+		    malloc(sizeof(char) * iface->recvbufsiz)) == NULL) {
+			log_warn("malloc");
+			close(s);
+			iface->recvbufsiz = 0;
 			continue;
 		}
 

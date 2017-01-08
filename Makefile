@@ -7,6 +7,7 @@ SRCS =	pktcaptd.c	\
 	interface.c	\
 	analyze.c	\
 	control.c	\
+	strtonum.c	\
 	log.c
 
 CTRL_SRCS =	pktcaptdctl.c	\
