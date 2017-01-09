@@ -1,6 +1,7 @@
 ## Packet Capture Daemon
-Capturering and Analyzing packets by using Raw Socket
-It works on Linux
+Capturering and Analyzing packets by using Raw Socket.
+
+It works on Linux.
 
 ```
 % pktcaptdctl dump
@@ -54,7 +55,7 @@ Text File
 <IF1 name> : <Using protocol>
 <IF2 name> : <Using protocol>
 ```
- - <Using protocol>
+ - Using protocol
   - mac, ip, port
 
 ### Running
@@ -68,5 +69,5 @@ sudo pktcaptd [-P <PID file>] [-S <Socket file>] [-C <Config file>]
 ```
 sudo pktcaptdctl -S <Socket file> <commands ...>
 ```
- - <commands>
+ - commands
   - dump, clear
