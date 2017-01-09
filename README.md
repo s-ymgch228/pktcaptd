@@ -58,7 +58,7 @@ Text File
  - Using protocol
   - mac, ip, port
 
-### Running
+### Run
 
 ```
 sudo pktcaptd [-P <PID file>] [-S <Socket file>] [-C <Config file>]
