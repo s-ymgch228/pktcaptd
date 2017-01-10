@@ -362,6 +362,7 @@ analyze(struct analyzer *a, void *bufp, int siz)
 
 	memset(&inpkt, 0, sizeof(inpkt));
 	memset(&entry, 0, sizeof(entry));
+	inp_flags = 0;
 	inpkt.flags = &inp_flags;
 
 	hdrsiz = sizeof(struct ether_header);
